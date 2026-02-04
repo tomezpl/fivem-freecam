@@ -27,7 +27,43 @@ function validateCamera(camera) {
     return true;
 }
 
+function coerceValue(value, expectedType) {
+    if(typeof value === expectedType) {
+        return value;
+    }
+
+    switch(expectedType) {
+        case 'boolean':
+            if(typeof value === 'string') {
+                if(!isNaN(Number(value.trim())) && [0, 1].includes(Number(value.trim()))) {
+                    return Number(value.trim()) === 1;
+                }
+
+                if(['true', 'false'].includes(value.trim().toLowerCase())) {
+                    return value.trim().toLowerCase() === 'true';
+                }
+            }
+
+            // If the user types `set <setting>` without a setting name, and the setting is a boolean, treat it as a shorthand for `true`.
+            if(typeof value === 'undefined') {
+                return true;
+            }
+            break;
+        case 'number':
+            if(typeof value === 'string') {
+                if(!isNaN(Number(value.trim()))) {
+                    return Number(value.trim());
+                }
+            }
+
+            break;
+    }
+
+    throw new Error(`value ${value} does not fit type ${expectedType}`);
+}
+
 const State = {
+    _needToRefocus: false,
     camera: null,
     isEnabled: false,
     setCameraEnabled(enabled = true) {
@@ -43,6 +79,15 @@ const State = {
 
             if(!enabled && wasEnabled) {
                 RenderScriptCams(false, false, 0, false, false);
+
+                if(this._needToRefocus) {
+                    this._needToRefocus = false;
+                    if (PlayerPedId()) {
+                        SetFocusEntity(PlayerPedId());
+                    } else {
+                        SetFocusPosAndVel(...GetGameplayCamCoord());
+                    }
+                }
             }
         }
     },
@@ -56,6 +101,44 @@ const State = {
             SetCamRot(this.camera, ...playerCamRot, 2);
             SetCamFov(this.camera, playerCamFov);
         }
+    },
+    setSetting(key, value) {
+        if(!(key in this.settings)) {
+            Logger.warn(`${key} is not a valid setting.`);
+            return;
+        }
+
+        try {
+            const typedValue = coerceValue(value, this.settingTypes[key]);
+            this.settings[key] = typedValue;
+
+            if(key === 'streamOn' && typedValue) {
+                this._needToRefocus = true;
+            }
+        } catch (err) {
+            Logger.error(`There was an error setting ${key}`, err);
+        }
+
+    },
+    settings: {
+        /**
+         * If set to `true`, the script will set streaming focus to the current camera position.
+         * @default false
+         */
+        streamOn: false,
+
+        /**
+         * If set to `true`, the script will smooth out the camera movement when input is let go of.
+         */
+        smooth: true,
+
+        linearSpeed: 0.8,
+        angularSpeed: 135,
+        fovSpeed: 40,
+    },
+    /** @type {Partial<Record<string, string>>} */
+    get settingTypes() {
+        return Object.fromEntries(Object.entries(this.settings).map(([k, v]) => [k, typeof v]));
     }
 };
 
@@ -78,7 +161,7 @@ on('onClientResourceStart', (resource) => {
         Logger.log('resource started');
         State.camera = createCamera();
 
-        RegisterCommand("cam", (source, [cmd]) => {
+        RegisterCommand("cam", (source, [cmd, settingName, settingVal]) => {
             let shouldEnable = !State.isEnabled;
 
             switch(cmd) {
@@ -88,6 +171,9 @@ on('onClientResourceStart', (resource) => {
                 case 'off':
                     shouldEnable = false;
                     break;
+                case 'set':
+                    State.setSetting(settingName, settingVal);
+                    return;
                 case 'info':
                     Logger.log(`current cam\n\tpos: ${vecToStr(GetCamCoord(State.camera))}\n\trot: ${vecToStr(GetCamRot(State.camera, 2))}\n\tfov: ${GetCamFov(State.camera)}`);
                     return;
@@ -113,10 +199,6 @@ const Controls = Object.freeze({
 
 const ControlsToDisable = Object.values(Controls);
 
-const CameraLinearSpeed = 0.8;
-const CameraAngularSpeed = 135;
-const CameraFovSpeed = 40;
-
 const DEG_TO_RAD = Math.PI / 180;
 
 function crossProduct(aX, aY, aZ, bX, bY, bZ) {
@@ -130,6 +212,9 @@ setTick(() => {
         }
 
         const deltaTime = GetFrameTime();
+        const camLinearSpeed = State.settings.linearSpeed;
+        const camAngularSpeed = State.settings.angularSpeed;
+        const camFovSpeed = State.settings.fovSpeed;
 
         const forward = -GetDisabledControlNormal(0, Controls.MoveFwd);
         const right = -GetDisabledControlNormal(0, Controls.MoveRight);
@@ -144,9 +229,13 @@ setTick(() => {
         let [pitch, roll, yaw] = GetCamRot(State.camera, 2);
         const fov = GetCamFov(State.camera);
 
-        yaw += CameraAngularSpeed * lookRight * deltaTime;
-        pitch += CameraAngularSpeed * lookUp * deltaTime;
-        roll += CameraAngularSpeed * (rollRight - rollLeft) * 0.5 * deltaTime;
+        if(State.settings.streamOn) {
+            SetFocusPosAndVel(originX, originY, originZ, 0, 0, 0);
+        }
+
+        yaw += camAngularSpeed * lookRight * deltaTime;
+        pitch += camAngularSpeed * lookUp * deltaTime;
+        roll += camAngularSpeed * (rollRight - rollLeft) * 0.5 * deltaTime;
 
         const yawRad = yaw * DEG_TO_RAD;
         const pitchRad = pitch * DEG_TO_RAD;
@@ -166,12 +255,12 @@ setTick(() => {
 
         SetCamCoord(
             State.camera,
-            originX + (forwardY * CameraLinearSpeed * forward) + (rightY * CameraLinearSpeed * right) + (upY * CameraLinearSpeed * up),
-            originY + (forwardX * CameraLinearSpeed * forward) + (rightX * CameraLinearSpeed * right) + (upX * CameraLinearSpeed * up),
-            originZ + (forwardZ * CameraLinearSpeed * forward) + (rightZ * CameraLinearSpeed * right) + (upZ * CameraLinearSpeed * up),
+            originX + (forwardY * camLinearSpeed * forward) + (rightY * camLinearSpeed * right) + (upY * camLinearSpeed * up),
+            originY + (forwardX * camLinearSpeed * forward) + (rightX * camLinearSpeed * right) + (upX * camLinearSpeed * up),
+            originZ + (forwardZ * camLinearSpeed * forward) + (rightZ * camLinearSpeed * right) + (upZ * camLinearSpeed * up),
         );
 
-        SetCamFov(State.camera, fov - fovDelta * deltaTime * CameraFovSpeed);
+        SetCamFov(State.camera, fov - fovDelta * deltaTime * camFovSpeed);
 
         RenderScriptCams(true, false, 0, false, false);
     }
