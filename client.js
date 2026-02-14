@@ -136,6 +136,15 @@ const State = {
         angularSpeed: 135,
         fovSpeed: 40,
     },
+    inputState: {
+        fwd: 0,
+        up: 0,
+        right: 0,
+        pitch: 0,
+        yaw: 0,
+        roll: 0,
+        fov: 0,
+    },
     /** @type {Partial<Record<string, string>>} */
     get settingTypes() {
         return Object.fromEntries(Object.entries(this.settings).map(([k, v]) => [k, typeof v]));
@@ -179,6 +188,12 @@ on('onClientResourceStart', (resource) => {
                     return;
             }
 
+            if(shouldEnable !== State.isEnabled) {
+                for (const key in State.inputState) {
+                    State.inputState[key] = 0;
+                }
+            }
+
             State.setCameraEnabled(shouldEnable);
         })
     }
@@ -205,6 +220,31 @@ function crossProduct(aX, aY, aZ, bX, bY, bZ) {
     return [(aY * bZ) - (aZ * bY), (aZ * bX) - (aX * bZ), (aX * bY) - (aY * bX)];
 }
 
+// % of speed to reduce by every tick
+const DECAY_RATE = 4;
+
+function processInput(input, currentValue, deltaTime, {smooth = false}) {
+    /**
+     * @type number
+     */
+    const finalInput = input;
+
+    if(!smooth) {
+        return finalInput;
+    }
+
+    const sign = Math.sign(input);
+
+    // When direction changes, just return the input.
+    if (sign > 0.1 || sign < -0.1) {
+        if(sign !== Math.sign(currentValue)) {
+            return input;
+        }
+    }
+
+    return Math.sign(currentValue) * Math.max(Math.abs(input), Math.abs(currentValue) - (Math.abs(currentValue) * DECAY_RATE * deltaTime));
+}
+
 setTick(() => {
     if(State.isEnabled) {
         for(const control of ControlsToDisable) {
@@ -218,12 +258,22 @@ setTick(() => {
 
         const forward = -GetDisabledControlNormal(0, Controls.MoveFwd);
         const right = -GetDisabledControlNormal(0, Controls.MoveRight);
-        const lookRight = -GetDisabledControlNormal(0, Controls.LookHoriz);
-        const lookUp = -GetDisabledControlNormal(0, Controls.LookVert);
+        State.inputState.yaw = -GetDisabledControlNormal(0, Controls.LookHoriz);
+        State.inputState.pitch = -GetDisabledControlNormal(0, Controls.LookVert);
         const rollRight = GetDisabledControlNormal(0, Controls.RollRight);
         const rollLeft = GetDisabledControlNormal(0, Controls.RollLeft);
         const up = -GetDisabledControlNormal(0, Controls.MoveUp) + GetDisabledControlNormal(0, Controls.MoveDown);
         const fovDelta = -GetDisabledControlNormal(0, Controls.FovUp) + GetDisabledControlNormal(0, Controls.FovDown);
+
+        Object.entries({
+            fwd: forward,
+            right,
+            roll: rollRight - rollLeft,
+            up,
+            fov: fovDelta
+        }).forEach(([key, value]) => {
+            State.inputState[key] = processInput(value, State.inputState[key], deltaTime, State.settings);
+        });
 
         const [originX, originY, originZ] = GetCamCoord(State.camera);
         let [pitch, roll, yaw] = GetCamRot(State.camera, 2);
@@ -233,9 +283,9 @@ setTick(() => {
             SetFocusPosAndVel(originX, originY, originZ, 0, 0, 0);
         }
 
-        yaw += camAngularSpeed * lookRight * deltaTime;
-        pitch += camAngularSpeed * lookUp * deltaTime;
-        roll += camAngularSpeed * (rollRight - rollLeft) * 0.5 * deltaTime;
+        yaw += camAngularSpeed * State.inputState.yaw * deltaTime;
+        pitch += camAngularSpeed * State.inputState.pitch * deltaTime;
+        roll += camAngularSpeed * State.inputState.roll * 0.5 * deltaTime;
 
         const yawRad = yaw * DEG_TO_RAD;
         const pitchRad = pitch * DEG_TO_RAD;
@@ -255,12 +305,12 @@ setTick(() => {
 
         SetCamCoord(
             State.camera,
-            originX + (forwardY * camLinearSpeed * forward) + (rightY * camLinearSpeed * right) + (upY * camLinearSpeed * up),
-            originY + (forwardX * camLinearSpeed * forward) + (rightX * camLinearSpeed * right) + (upX * camLinearSpeed * up),
-            originZ + (forwardZ * camLinearSpeed * forward) + (rightZ * camLinearSpeed * right) + (upZ * camLinearSpeed * up),
+            originX + (forwardY * camLinearSpeed * State.inputState.fwd) + (rightY * camLinearSpeed * State.inputState.right) + (upY * camLinearSpeed * State.inputState.up),
+            originY + (forwardX * camLinearSpeed * State.inputState.fwd) + (rightX * camLinearSpeed * State.inputState.right) + (upX * camLinearSpeed * State.inputState.up),
+            originZ + (forwardZ * camLinearSpeed * State.inputState.fwd) + (rightZ * camLinearSpeed * State.inputState.right) + (upZ * camLinearSpeed * State.inputState.up),
         );
 
-        SetCamFov(State.camera, fov - fovDelta * deltaTime * camFovSpeed);
+        SetCamFov(State.camera, fov - State.inputState.fov * deltaTime * camFovSpeed);
 
         RenderScriptCams(true, false, 0, false, false);
     }
