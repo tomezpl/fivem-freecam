@@ -183,6 +183,9 @@ on('onClientResourceStart', (resource) => {
                 case 'set':
                     State.setSetting(settingName, settingVal);
                     return;
+                case 'tp':
+                    SetEntityCoords(PlayerPedId(), ...GetCamCoord(State.camera), false, false, false, false);
+                    return;
                 case 'info':
                     Logger.log(`current cam\n\tpos: ${vecToStr(GetCamCoord(State.camera))}\n\trot: ${vecToStr(GetCamRot(State.camera, 2))}\n\tfov: ${GetCamFov(State.camera)}`);
                     return;
