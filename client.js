@@ -148,7 +148,9 @@ const State = {
     /** @type {Partial<Record<string, string>>} */
     get settingTypes() {
         return Object.fromEntries(Object.entries(this.settings).map(([k, v]) => [k, typeof v]));
-    }
+    },
+    lastPos: null,
+    handlingLastPos: false,
 };
 
 /**
@@ -163,6 +165,16 @@ function createCamera() {
 
 function vecToStr([x, y, z]) {
     return `X = ${x}, Y = ${y}, Z = ${z}`;
+}
+
+function createCamPos(pos, rot, fov) {
+    return {pos, rot, fov};
+}
+
+function restoreCamPos(camera, {pos, rot, fov}) {
+    SetCamCoord(camera, ...pos);
+    SetCamRot(camera, ...rot, 2);
+    SetCamFov(camera, fov);
 }
 
 on('onClientResourceStart', (resource) => {
@@ -189,12 +201,20 @@ on('onClientResourceStart', (resource) => {
                 case 'info':
                     Logger.log(`current cam\n\tpos: ${vecToStr(GetCamCoord(State.camera))}\n\trot: ${vecToStr(GetCamRot(State.camera, 2))}\n\tfov: ${GetCamFov(State.camera)}`);
                     return;
+                case 'lastPos':
+                    State.handlingLastPos = State.camera !== null && State.lastPos !== null;
+                    return;
             }
 
             if(shouldEnable !== State.isEnabled) {
                 for (const key in State.inputState) {
                     State.inputState[key] = 0;
                 }
+            }
+
+            if(!shouldEnable && State.camera !== null) {
+                // Store the last camera state
+                State.lastPos = createCamPos(GetCamCoord(State.camera), GetCamRot(State.camera, 2), GetCamFov(State.camera));
             }
 
             State.setCameraEnabled(shouldEnable);
@@ -278,42 +298,48 @@ setTick(() => {
             State.inputState[key] = processInput(value, State.inputState[key], deltaTime, State.settings);
         });
 
-        const [originX, originY, originZ] = GetCamCoord(State.camera);
-        let [pitch, roll, yaw] = GetCamRot(State.camera, 2);
-        const fov = GetCamFov(State.camera);
+        if(!State.handlingLastPos) {
+            const [originX, originY, originZ] = GetCamCoord(State.camera);
+            let [pitch, roll, yaw] = GetCamRot(State.camera, 2);
+            const fov = GetCamFov(State.camera);
 
-        if(State.settings.streamOn) {
-            SetFocusPosAndVel(originX, originY, originZ, 0, 0, 0);
+            if(State.settings.streamOn) {
+                SetFocusPosAndVel(originX, originY, originZ, 0, 0, 0);
+            }
+
+            yaw += camAngularSpeed * State.inputState.yaw * deltaTime;
+            pitch += camAngularSpeed * State.inputState.pitch * deltaTime;
+            roll += camAngularSpeed * State.inputState.roll * 0.5 * deltaTime;
+
+            const yawRad = yaw * DEG_TO_RAD;
+            const pitchRad = pitch * DEG_TO_RAD;
+            const rollRad = roll * DEG_TO_RAD;
+
+            const forwardX = Math.cos(yawRad) * Math.cos(pitchRad)
+            const forwardY = Math.sin(yawRad) * -Math.cos(pitchRad);
+            const forwardZ = Math.sin(pitchRad);
+
+            const rightX = Math.cos(yawRad + Math.PI * 0.5) * Math.cos(pitchRad);
+            const rightY = Math.sin(yawRad + Math.PI * 0.5) * -Math.cos(pitchRad);
+            const rightZ = Math.sin(pitchRad) * Math.sin(rollRad);
+
+            const [upX, upY, upZ] = crossProduct(forwardX, forwardY, forwardZ, rightX, rightY, rightZ);
+
+            SetCamRot(State.camera, pitch, roll, yaw, 2);
+            SetCamCoord(
+                State.camera,
+                originX + (forwardY * camLinearSpeed * State.inputState.fwd) + (rightY * camLinearSpeed * State.inputState.right) + (upY * camLinearSpeed * State.inputState.up),
+                originY + (forwardX * camLinearSpeed * State.inputState.fwd) + (rightX * camLinearSpeed * State.inputState.right) + (upX * camLinearSpeed * State.inputState.up),
+                originZ + (forwardZ * camLinearSpeed * State.inputState.fwd) + (rightZ * camLinearSpeed * State.inputState.right) + (upZ * camLinearSpeed * State.inputState.up),
+            );
+
+            SetCamFov(State.camera, fov - State.inputState.fov * deltaTime * camFovSpeed);
         }
-
-        yaw += camAngularSpeed * State.inputState.yaw * deltaTime;
-        pitch += camAngularSpeed * State.inputState.pitch * deltaTime;
-        roll += camAngularSpeed * State.inputState.roll * 0.5 * deltaTime;
-
-        const yawRad = yaw * DEG_TO_RAD;
-        const pitchRad = pitch * DEG_TO_RAD;
-        const rollRad = roll * DEG_TO_RAD;
-
-        const forwardX = Math.cos(yawRad) * Math.cos(pitchRad)
-        const forwardY = Math.sin(yawRad) * -Math.cos(pitchRad);
-        const forwardZ = Math.sin(pitchRad);
-
-        const rightX = Math.cos(yawRad + Math.PI * 0.5) * Math.cos(pitchRad);
-        const rightY = Math.sin(yawRad + Math.PI * 0.5) * -Math.cos(pitchRad);
-        const rightZ = Math.sin(pitchRad) * Math.sin(rollRad);
-
-        const [upX, upY, upZ] = crossProduct(forwardX, forwardY, forwardZ, rightX, rightY, rightZ);
-
-        SetCamRot(State.camera, pitch, roll, yaw, 2);
-
-        SetCamCoord(
-            State.camera,
-            originX + (forwardY * camLinearSpeed * State.inputState.fwd) + (rightY * camLinearSpeed * State.inputState.right) + (upY * camLinearSpeed * State.inputState.up),
-            originY + (forwardX * camLinearSpeed * State.inputState.fwd) + (rightX * camLinearSpeed * State.inputState.right) + (upX * camLinearSpeed * State.inputState.up),
-            originZ + (forwardZ * camLinearSpeed * State.inputState.fwd) + (rightZ * camLinearSpeed * State.inputState.right) + (upZ * camLinearSpeed * State.inputState.up),
-        );
-
-        SetCamFov(State.camera, fov - State.inputState.fov * deltaTime * camFovSpeed);
+        else {
+            Logger.log('restoring camera', State.camera, ' with pos', JSON.stringify(State.lastPos));
+            State.handlingLastPos = false;
+            restoreCamPos(State.camera, State.lastPos);
+        }
 
         RenderScriptCams(true, false, 0, false, false);
     }

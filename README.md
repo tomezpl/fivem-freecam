@@ -39,6 +39,7 @@ Executing the `/cam` command (either in a text chat or by typing `cam` after pre
 |         /cam info          | Displays the current camera position, rotation (order 2), and FOV. |
 | /cam set `setting` `value` | Changes a setting. See [Settings](#settings).                      |
 |          /cam tp           | Teleports the local player ped to the current camera position.     |
+|        /cam lastPos        | Teleports the  camera to its last position before it was disabled. |
 
 ### Settings
 |   Setting    |    Value type     | Description                                                                 |
